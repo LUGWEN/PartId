@@ -3,86 +3,106 @@ import re
 import shutil
 import argparse
 import sys
+import time
 
 def count_part_id_elements(file_path):
     """Count the number of <score-part> elements in a file."""
-    sys.stdout.write(f"Analyzing file: {file_path}\n")
-    sys.stdout.flush()
-    
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
             # Find all occurrences of <score-part id="..."> in the file
             matches = re.findall(r'<score-part id="[^"]+">', content)
-            sys.stdout.write(f"  Found {len(matches)} <score-part> elements\n")
-            sys.stdout.flush()
             return len(matches)
     except Exception as e:
         sys.stdout.write(f"Error processing {file_path}: {e}\n")
         sys.stdout.flush()
         return 0
 
-def categorize_files(source_dir='.', copy_mode=True):
-    """Categorize files based on the number of <score-part> elements."""
-    # Convert to absolute path
-    source_dir = os.path.abspath(source_dir)
-    sys.stdout.write(f"Processing files in: {source_dir}\n")
-    sys.stdout.flush()
+def categorize_xml_in_folder(folder_path, copy_mode=True, verbose=True):
+    """Categorize XML files in a specific folder."""
+    folder_path = os.path.abspath(folder_path)
+    folder_name = os.path.basename(folder_path)
     
-    # Get all XML files in the source directory
-    files = []
-    for file in os.listdir(source_dir):
-        if file.endswith('.xml') and os.path.isfile(os.path.join(source_dir, file)):
-            files.append(file)
-            sys.stdout.write(f"Found XML file: {file}\n")
-            sys.stdout.flush()
-    
-    if not files:
-        sys.stdout.write("No XML files found in the directory!\n")
+    if verbose:
+        sys.stdout.write(f"\nProcessing folder: {folder_path}\n")
+        sys.stdout.write("=" * 50 + "\n")
         sys.stdout.flush()
-        return
     
-    # Create destination directories
+    # Get all XML files in the current folder (non-recursive)
+    xml_files = []
+    for file in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, file)
+        if file.endswith('.xml') and os.path.isfile(file_path):
+            xml_files.append(file)
+    
+    if not xml_files:
+        if verbose:
+            sys.stdout.write(f"No XML files found in {folder_name}. Skipping.\n")
+            sys.stdout.flush()
+        return 0
+    
+    # Define destination directory paths (but don't create them yet)
     dest_dirs = {
-        "single": os.path.join(source_dir, "1_single_part"),
-        "double": os.path.join(source_dir, "2_double_parts"),
-        "multiple": os.path.join(source_dir, "3_multiple_parts")
+        "single": os.path.join(folder_path, "1_part"),
+        "medium": os.path.join(folder_path, "2-6_parts"),
+        "large": os.path.join(folder_path, "multi_parts")
     }
     
-    for dir_name, dir_path in dest_dirs.items():
-        os.makedirs(dir_path, exist_ok=True)
-        sys.stdout.write(f"Created directory: {dir_path}\n")
+    # First scan to count files per category
+    category_counts = {"single": 0, "medium": 0, "large": 0, "skipped": 0}
+    file_categories = {}  # Store category for each file
+    
+    if verbose:
+        sys.stdout.write(f"Scanning {len(xml_files)} XML files in {folder_name}...\n")
         sys.stdout.flush()
     
-    # Count stats
-    stats = {"single": 0, "double": 0, "multiple": 0, "skipped": 0}
-    
-    # Process each file
-    sys.stdout.write(f"Processing {len(files)} XML files...\n")
-    sys.stdout.flush()
-    
-    for file in files:
-        file_path = os.path.join(source_dir, file)
+    # Show progress for large folders
+    total_files = len(xml_files)
+    for i, file in enumerate(xml_files):
+        if verbose and total_files > 10 and (i % 5 == 0 or i == total_files - 1):
+            progress = (i + 1) / total_files * 100
+            sys.stdout.write(f"Progress: {progress:.1f}% ({i+1}/{total_files})\r")
+            sys.stdout.flush()
+            
+        file_path = os.path.join(folder_path, file)
         count = count_part_id_elements(file_path)
         
-        # Determine destination directory
+        # Determine category based on new rules
         if count == 1:
-            dest_dir = dest_dirs["single"]
             category = "single"
-        elif count == 2:
-            dest_dir = dest_dirs["double"]
-            category = "double"
-        elif count >= 3:
-            dest_dir = dest_dirs["multiple"]
-            category = "multiple"
+        elif 2 <= count <= 6:
+            category = "medium"
+        elif count > 6:
+            category = "large"
         else:
-            # Skip files with no <score-part> elements
-            sys.stdout.write(f"Skipping '{file}': No <score-part> elements found\n")
-            sys.stdout.flush()
-            stats["skipped"] += 1
+            if verbose:
+                sys.stdout.write(f"Skipping '{file}': No <score-part> elements found\n")
+                sys.stdout.flush()
+            category_counts["skipped"] += 1
             continue
         
-        # Create destination path
+        category_counts[category] += 1
+        file_categories[file] = category
+    
+    # Create only needed directories
+    created_dirs = set()
+    for category, count in category_counts.items():
+        if category != "skipped" and count > 0:
+            os.makedirs(dest_dirs[category], exist_ok=True)
+            created_dirs.add(category)
+            if verbose:
+                sys.stdout.write(f"Created directory: {os.path.basename(dest_dirs[category])}\n")
+                sys.stdout.flush()
+    
+    # Now process files and move/copy them
+    if verbose:
+        sys.stdout.write(f"\nMoving files to appropriate folders...\n")
+        sys.stdout.flush()
+    
+    # Process each file
+    for file, category in file_categories.items():
+        file_path = os.path.join(folder_path, file)
+        dest_dir = dest_dirs[category]
         dest_path = os.path.join(dest_dir, file)
         
         # Move or copy the file
@@ -93,21 +113,103 @@ def categorize_files(source_dir='.', copy_mode=True):
             else:
                 shutil.move(file_path, dest_path)
                 action = "Moved"
-            sys.stdout.write(f"{action} '{file}' to '{os.path.basename(dest_dir)}' (part count: {count})\n")
-            sys.stdout.flush()
-            stats[category] += 1
+            if verbose:
+                sys.stdout.write(f"{action} '{file}' to '{os.path.basename(dest_dir)}'\n")
+                sys.stdout.flush()
         except Exception as e:
-            sys.stdout.write(f"Error processing {file}: {e}\n")
-            sys.stdout.flush()
+            if verbose:
+                sys.stdout.write(f"Error processing {file}: {e}\n")
+                sys.stdout.flush()
     
-    # Print summary
-    sys.stdout.write("\nSummary:\n")
-    sys.stdout.write(f"- Files with 1 part: {stats['single']}\n")
-    sys.stdout.write(f"- Files with 2 parts: {stats['double']}\n")
-    sys.stdout.write(f"- Files with 3+ parts: {stats['multiple']}\n")
-    sys.stdout.write(f"- Files with no parts: {stats['skipped']}\n")
-    sys.stdout.write(f"Total files processed: {sum(stats.values())}\n")
-    sys.stdout.flush()
+    # Print summary for this folder
+    if verbose:
+        sys.stdout.write(f"\nSummary for {folder_name}:\n")
+        sys.stdout.write(f"- Files with 1 part: {category_counts['single']}\n")
+        sys.stdout.write(f"- Files with 2-6 parts: {category_counts['medium']}\n")
+        sys.stdout.write(f"- Files with >6 parts: {category_counts['large']}\n")
+        sys.stdout.write(f"- Files with no parts: {category_counts['skipped']}\n")
+        sys.stdout.write(f"Total files processed: {sum(category_counts.values())}\n")
+        sys.stdout.flush()
+    
+    return sum(category_counts.values()) - category_counts["skipped"]
+
+def categorize_files_recursive(source_dir='.', copy_mode=True, recursive=True, max_depth=None, current_depth=0, verbose=True):
+    """Categorize files based on the number of <score-part> elements in all subfolders."""
+    start_time = time.time()
+    
+    # Convert to absolute path
+    source_dir = os.path.abspath(source_dir)
+    if verbose:
+        sys.stdout.write(f"Starting to process: {source_dir}\n")
+        sys.stdout.write("-" * 60 + "\n")
+        sys.stdout.flush()
+    
+    # Process root directory
+    processed_count = categorize_xml_in_folder(source_dir, copy_mode, verbose)
+    total_processed = processed_count
+    
+    # If recursive and we haven't reached max depth, process all subdirectories
+    if recursive and (max_depth is None or current_depth < max_depth):
+        # Get all subdirectories (non-recursive)
+        subdirs_to_process = []
+        for item in os.listdir(source_dir):
+            item_path = os.path.join(source_dir, item)
+            # Skip our categorized folders and hidden folders
+            if os.path.isdir(item_path) and not item.startswith(".") and not item in ["1_part", "2-6_parts", "multi_parts"]:
+                subdirs_to_process.append(item_path)
+                
+        if subdirs_to_process and verbose:
+            sys.stdout.write(f"\nFound {len(subdirs_to_process)} subdirectories to process recursively.\n")
+            sys.stdout.flush()
+            
+        # Process each subdirectory recursively    
+        for i, subdir in enumerate(subdirs_to_process):
+            if verbose:
+                sys.stdout.write(f"\n[{i+1}/{len(subdirs_to_process)}] Recursively processing subdirectory: {os.path.basename(subdir)}\n")
+                sys.stdout.write("=" * 60 + "\n")
+                sys.stdout.flush()
+                
+            # Recursively process this subdirectory
+            subdir_processed = categorize_files_recursive(subdir, copy_mode, recursive, max_depth, current_depth + 1, verbose)
+            total_processed += subdir_processed
+            
+            if verbose:
+                sys.stdout.write(f"Completed processing subdirectory: {os.path.basename(subdir)}, processed {subdir_processed} files\n")
+                sys.stdout.flush()
+        
+        if verbose and len(subdirs_to_process) > 0:
+            sys.stdout.write("\n" + "=" * 60 + "\n")
+            sys.stdout.write(f"Returning to parent directory: {os.path.basename(source_dir)}\n")
+            sys.stdout.flush()
+            
+    elapsed_time = time.time() - start_time
+    if verbose and recursive and source_dir == os.path.abspath('.') and current_depth == 0:
+        sys.stdout.write(f"\nGrand Total: Processed {total_processed} XML files across all folders.\n")
+        sys.stdout.write(f"Total time: {elapsed_time:.2f} seconds\n")
+        sys.stdout.flush()
+    
+    return total_processed
+
+def process_specific_subdirectory(base_dir, subdir_name, copy_mode=True, recursive=True, verbose=True):
+    """Process a specific subdirectory under the base directory."""
+    # Handle Windows paths correctly
+    base_dir = os.path.abspath(base_dir)
+    
+    # Find the subdirectory
+    target_dir = os.path.join(base_dir, subdir_name)
+    
+    if not os.path.isdir(target_dir):
+        sys.stdout.write(f"Error: Subdirectory '{subdir_name}' not found in '{base_dir}'.\n")
+        sys.stdout.flush()
+        return 0
+    
+    if verbose:
+        sys.stdout.write(f"Processing specific subdirectory: {target_dir}\n")
+        sys.stdout.write("=" * 60 + "\n")
+        sys.stdout.flush()
+    
+    # Process the subdirectory
+    return categorize_files_recursive(target_dir, copy_mode, recursive, verbose=verbose)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Categorize MusicXML files based on the number of <score-part> elements.")
@@ -115,11 +217,34 @@ if __name__ == "__main__":
                         help="Source directory to process (default: current directory)")
     parser.add_argument("-m", "--move", action="store_true", 
                         help="Move files instead of copying them")
+    parser.add_argument("-nr", "--no-recursive", action="store_true", 
+                        help="Do not process subdirectories recursively (default is recursive)")
+    parser.add_argument("-s", "--subdirectory", 
+                        help="Process only a specific subdirectory under the main directory")
+    parser.add_argument("-l1", "--level-one", action="store_true",
+                        help="Process only immediate subdirectories (depth=1)")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="Reduce output verbosity")
     
     args = parser.parse_args()
     
-    sys.stdout.write("Categorizing MusicXML files based on <score-part> elements...\n")
-    sys.stdout.flush()
-    categorize_files(args.directory, not args.move)
-    sys.stdout.write("Categorization complete!\n")
-    sys.stdout.flush() 
+    if not args.quiet:
+        sys.stdout.write("Categorizing MusicXML files based on <score-part> elements...\n")
+        sys.stdout.flush()
+    
+    # Handle Windows paths correctly
+    directory = os.path.abspath(args.directory)
+    
+    if args.subdirectory:
+        # Process only a specific subdirectory
+        process_specific_subdirectory(directory, args.subdirectory, not args.move, not args.no_recursive, not args.quiet)
+    elif args.level_one:
+        # Process only immediate subdirectories (depth=1)
+        categorize_files_recursive(directory, not args.move, not args.no_recursive, max_depth=1, verbose=not args.quiet)
+    else:
+        # Normal processing
+        categorize_files_recursive(directory, not args.move, not args.no_recursive, verbose=not args.quiet)
+    
+    if not args.quiet:
+        sys.stdout.write("\nCategorization complete!\n")
+        sys.stdout.flush() 
